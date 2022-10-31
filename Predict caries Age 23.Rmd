@@ -1,0 +1,312 @@
+
+---
+title: "Predict caries Age 23"
+output: html_document
+---
+
+                                ############################# Loading packages ######################################
+```{r packages}
+#install.packages("arsenal")
+#install.packages("PerformanceAnalytics")
+#install.packages("pander")
+#install.packages("haven")
+#install.packages("MachineShop")
+#install.packages("tidyverse")
+#install.packages("tableone")
+#install.packages("pastecs")
+#install.packages("coin")
+#install.packages("car")
+#install.packages("AER")
+#install.packages("doParallel")
+#install.packages("magrittr")
+#install.packages("recipes")
+#install.packages("Hmisc")
+#install.packages("psych")
+#install.packages("gbm")
+#install.packages("imputeTS")
+#install.packages("nnet")
+#install.packages("stats")
+#install.packages("MASS")
+#install.packages("ResourceSelection")
+#install.packages("glmnet")
+#install.packages("corrplot")
+library(corrplot)
+library(haven)
+library(readr)
+library(pander)
+library(dplyr)
+library(psych)
+library(Hmisc)
+library(tableone)
+library(pastecs)
+library(coin)
+library(car)
+library(AER)
+library(arsenal)
+library(PerformanceAnalytics)
+require(MASS)
+require(knitr)
+library(MASS)
+library(MachineShop)
+library(nnet)
+library(stats)
+library(ResourceSelection)
+suppressPackageStartupMessages(library(doParallel))
+suppressPackageStartupMessages(library(recipes))
+library(magrittr)
+library(gbm)
+## Allocate cores for parallel processing
+registerDoParallel(cores = 6)
+```
+
+
+```{r}
+
+#importing complete DMFS dataset 
+setwd("/Users/damia/OneDrive/Documents/PhD/Datasets")
+D2EXP<- read.csv("/Users/damia/OneDrive/Documents/PhD/Datasets/Codes for paper 1, 2, 3/D2EXP.csv")
+head(D2EXP)
+
+```
+
+                            ##################### Exploratory data analyses ###########################
+```{r}
+############# Univariate analysis ###########
+#D2EXP %>% glimpse()
+summary(D2EXP[,1:9])
+stat.desc (D2EXP[,10:52], basic = FALSE)
+stat.desc (D2EXP[,53])
+stat.desc (D2EXP[,10:53])
+
+#####Bivariate analysis##############
+wilcox.test(D2MFS_count23 ~ female1, mu=0, alt= "two.sided", paired= F, conf.int = T, conf.level = 0.95,  exact=F, correct=T, data = D2EXP)
+wilcox.test(D2MFS_count23 ~ brushingfreq9, mu=0, alt= "two.sided", paired= F, conf.int = T, conf.level = 0.95,  exact=F, correct=T, data = D2EXP)
+wilcox.test(D2MFS_count23 ~ brushingfreq13, mu=0, alt= "two.sided", paired= F, conf.int = T, conf.level = 0.95,  exact=F, correct=T, data = D2EXP)
+wilcox.test(D2MFS_count23 ~ brushingfreq17, mu=0, alt= "two.sided", paired= F, conf.int = T, conf.level = 0.95,  exact=F, correct=T, data =D2EXP)
+wilcox.test(D2MFS_count23 ~ brushingfreq23, mu=0, alt= "two.sided", paired= F, conf.int = T, conf.level = 0.95,  exact=F, correct=T, data = D2EXP)
+
+kruskal.test(D2MFS_count23 ~ income_2007, data = D2EXP)
+kruskal.test(D2MFS_count23 ~ mom_edu_2007, data = D2EXP)
+kruskal.test(D2MFS_count23 ~ SES_3cat_2007, data = D2EXP)
+```
+```{r,fig.height=10,fig.width=13,options(max.print=1000000)  }
+                     ############ Bivariate analysis ##############
+                     ####### Numerical independent variables: Correlation tests #############
+
+##create dataframe of numerical variables## 
+BV_cont<-D2EXP[c("total_mgF9","homeppm9","waterbase9","milk9","juice1009","ssb9","waterbasefreq9","milkfreq9","juicefreq9","ssbfreq9",
+            "total_mgF13","homeppm13","waterbase13","milk13","juice10013","ssb13","waterbasefreq13","milkfreq13","juicefreq13","ssbfreq13",
+            "total_mgF17","homeppm17","waterbase17","milk17","juice10017","ssb17","waterbasefreq17","milkfreq17","juicefreq17","ssbfreq17",
+            "total_mgF23","homeppm23","waterbase23","milk23","juice10023","ssb23","waterbasefreq23","milkfreq23","juicefreq23","ssbfreq23",         
+            "D2MFS_count9","D2MFS_count13","D2MFS_count17","D2MFS_count23")]
+
+##perform correlation test using the new dataframe## 
+corr.test(BV_cont[,unlist(lapply(BV_cont, is.numeric))])
+
+corrplot(cor(BV_cont), method="circle")
+
+chart.Correlation(BV_cont[1:44])
+```
+ 
+
+                                   ############ Data Preprocessing using Recipes package #######################
+```{r}
+                                   
+recipe1 <- recipe(D2MFS_count23 ~ ., data = D2EXP) %>%
+  step_rm(id)%>%                                              ##Removing variable id
+  step_nzv(all_predictors()) %>%                              ##Potentially remove variables that are highly sparse and unbalanced
+  step_normalize(all_numeric(), -all_outcomes()) %>%          ##Normalize all numeric data
+  step_scale(all_numeric())%>%                                ##Scaling all numeric variables
+  #step_dummy(all_nominal(),-all_outcomes())%>%
+  #step_interact(terms = ~ .)%>%
+  role_case(stratum = D2MFS_count23)
+juice(prep(recipe1))
+
+##imputation
+recipe2 <- recipe1 %>%
+  step_impute_knn(all_predictors())%>%                       ##Imputation using K-nearest neighbor
+  step_dummy(all_nominal(), -all_outcomes())                 ##Create dummy variables from nomial variables
+juice(prep(recipe2))
+
+recipe2$var_info
+```
+
+                                              ############ Predictive modeling #######################
+                                            
+```{r}
+## Resampling Control
+cvc <- CVControl(folds = 10, repeats = 1, seed = 808)
+```
+
+
+```{r}
+                               #################### Model 1 - Negative Binomial regression #####################
+
+model<- TunedModel(GLMStepAICModel(family = "negbin"))
+glms_fit <- fit(recipe2, model = model)
+glms_res <- resample(recipe2, model = model, control = cvc)
+summary(glms_res)
+
+```
+
+```{r}
+## Negative binomial regression -  parameter tuning and plots
+N_tuned_model <- as.MLModel(glms_fit)
+print(N_tuned_model, n = Inf)
+#mean(glms_res$Observed)
+
+GLM_VImp = varimp(glms_fit)
+GLM_calib = calibration(glms_res)
+#GLM_Pdep = dependence(glms_fit)
+
+#plot(N_tuned_model, type = "line")
+plot(GLM_VImp)
+#plot(GLM_Pdep)
+plot(GLM_calib, se=TRUE)
+```
+
+
+```{r}
+                                            #################### Model 2 - Lasso regression #####################
+
+model <- TunedModel(GLMNetModel, grid = 10, fixed = list(alpha = 1))
+lasso_fit <- fit(recipe2, model = model)
+lasso_res <- resample(recipe2, model = model, control = cvc)
+summary(lasso_res)
+summary(lasso_fit)
+```
+
+```{r}
+##Lasso regression -  parameter tuning and plots
+L_tuned_model <- as.MLModel(lasso_fit)
+print(L_tuned_model, n = Inf)
+#mean(lasso_res$Observed)
+
+Lasso_VImp = varimp(lasso_fit)
+Lasso_calib = calibration(lasso_res)
+#Lasso_Pdep = dependence(lasso_fit,select = c("waterbasefreq9","ssb23","ssb13", "ssbfreq17", "D2MFS_count13", "D2MFS_count17", "mom_edu_2007", "brushingfreq13"))
+
+plot(L_tuned_model, type = "line")
+Lasso_VImp
+plot(Lasso_VImp)
+#plot(Lasso_Pdep)
+plot(Lasso_calib, se=TRUE)
+```
+
+```{r}
+                                  #################### Model 3 - gradient boosting machines (GBM)#####################
+
+model <- TunedModel(GBMModel(distribution = "poisson"))
+GBM_fit <- fit(recipe2, model = model)
+GBM_res <- resample(recipe2, model = model, control = cvc)
+summary(GBM_res)
+summary(GBM_fit)
+```
+
+```{r}
+##GBM -  parameter tuning and plots
+GB_tuned_model <- as.MLModel(GBM_fit)
+print(GB_tuned_model, n = Inf)
+#mean(GBM_res$Observed)
+
+GBM_VImp = varimp(GBM_fit)
+GBM_calib = calibration(GBM_res)
+#GBM_Pdep = dependence(GBM_fit)
+
+plot(GB_tuned_model, type = "line")
+plot(GBM_VImp)
+#plot(GBM_Pdep)
+plot(GBM_calib, se=TRUE)
+```
+
+```{r}
+                                  #################### Model 4 - Extreme gradient boosting model (XGBOOST) #####################
+      
+model <- TunedModel(
+  XGBTreeModel(
+    nrounds= 10, 
+    lambda =1, 
+    alpha= 0, 
+    max_depth = 3, 
+    verbose = 2, 
+    objective = "count:poisson"
+    )
+  )
+XGT_fit <- fit(recipe2, model = model)
+XGT_res <- resample(recipe2, model = model, control = cvc)
+summary(XGT_res)
+summary(XGT_fit)
+```
+
+```{r}
+## XGBOOST - parameter tuning and plots
+XG_tuned_model <- as.MLModel(XGT_fit)
+print(XG_tuned_model, n = Inf)
+#mean(XGT_res$Observed)
+
+XGT_VImp = varimp(XGT_fit)
+XGT_calib = calibration(XGT_res)
+#XGT_Pdep = dependence(XGT_fit)
+
+plot(XG_tuned_model, type = "line")
+plot(XGT_VImp)
+#plot(XGT_Pdep)
+plot(XGT_calib, breaks = NULL)
+
+```
+
+```{r}
+                                          ################# Comparing all 4 models ######################
+## Compare resampled results
+res <- c(GLM = glms_res, GBM = GBM_res, LASSO = lasso_res, XGBT = XGT_res)
+summary(res)
+plot(res)
+```
+
+      ######Discretization and dichotomization of the predicted and observed values from Lasso regression to generate classification parameters#########
+```{r}
+
+## creating discrete variables from the observed and predicted values from Lasso regression (best performing model)
+summary(lasso_res$Observed)
+lasso_res$Observed
+summary(lasso_res$Predicted)
+lasso_res$Predicted
+lasso_res$Observed.hat<- sapply(lasso_res$Observed, function(l){
+  (0:100)[which.max(dpois(0:100, lambda = l))]
+})
+lasso_res$Observed.hat
+
+lasso_res$Predicted.hat<- sapply(lasso_res$Predicted, function(l){
+  (0:100)[which.max(dpois(0:100, lambda = l))]
+})
+lasso_res$Predicted.hat
+
+
+##Dichotomizing the values from the selected model (Lasso regression model).
+lasso_res$Observed.hat<- as.factor(ifelse(lasso_res$Observed.hat==0,"NC","D"))
+lasso_res$Observed.hat
+table(lasso_res$Observed.hat)
+lasso_res$Predicted.hat<- as.factor(ifelse(lasso_res$Predicted.hat==0,"NC", "D"))
+lasso_res$Predicted.hat
+table(lasso_res$Predicted.hat)
+
+## performance assessment
+performance(lasso_res$Observed.hat, lasso_res$Predicted.hat)
+performance(lasso_res$Observed.hat, lasso_res$Predicted.hat, metrics = c(accuracy, precision, recall))
+confusion(lasso_res$Observed.hat, lasso_res$Predicted.hat)
+summary(confusion(lasso_res$Observed.hat, lasso_res$Predicted.hat))
+
+
+
+## performance assessment
+
+auc(Obs, Pred)
+roc <- performance_curve(Obs, Pred)
+plot(roc)
+plot(roc, type = "cutoffs")
+auc(roc)
+lasso_fit$beta
+
+```
+
+```{r}
